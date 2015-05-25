@@ -132,6 +132,7 @@ $ python drive-up.py --help
 
 ### Version 0.1.0, 2015-05-25
 
+- new: will upload symlinked files on file-systems that support this (disable with `--skip-symlinks`)
 - new: display average upload speed
 - new: display estimated time till complete
 - new: display elapsed time

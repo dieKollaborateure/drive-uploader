@@ -616,9 +616,12 @@ class local(object):
                     info = local_file(self.prefix, path)
                     self.total_size += info.size
                     self.file_paths.append(info)
+                    if (len(self.file_paths) % 10000) == 0:
+                        logger.info('found {} local files/folders so far...'.format(len(self.file_paths)))
                 except Exception as e:
                     self.skipped_local_files.append(path)
                     logger.error("Cannot read file '{}'. This file will be skipped. Reason: {}".format(path, e))
+        logger.info('finished resolving local files. Resolved {} local files/folders'.format(len(self.file_paths)))
 
 class drive_up(object):
     stop = False
