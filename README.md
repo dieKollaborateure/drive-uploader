@@ -127,3 +127,14 @@ To see more options, run `drive-up` with the help flag:
 ```
 $ python drive-up.py --help
 ```
+
+## Version history and release notes
+
+### Version 0.1.0, 2015-05-25
+
+- new: display average upload speed
+- new: display estimated time till complete
+- new: display elapsed time
+- new: display upload progress per file (only when `--debug` is specified)
+- change: use 4 upload threads by default (use `-t N` to use N number of threads)
+- first version that carries a version number

@@ -30,6 +30,8 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 """
 
+VERSION = "0.1.0"
+
 from oauth2client.client import OAuth2WebServerFlow, FlowExchangeError, OAuth2Credentials
 from apiclient.discovery import build
 from apiclient.http import MediaFileUpload
@@ -53,8 +55,13 @@ import os
 import json
 import random
 
-p = argparse.ArgumentParser(description='drive-up - a Google Drive Uploader by dieKollaborateure.com - Upload new and changed files '
-                                        'to your Google Drive.')
+p = argparse.ArgumentParser(description='drive-up - a Google Drive Uploader by dieKollaborateure.com '
+                                        '- Upload new and changed files to your Google Drive.'
+                                        'Make sure to try different number of threads to increase your upload speed.')
+
+p.add_argument('-V', '--version',
+               action='version',
+               version='%(prog)s (version {})'.format(VERSION))
 
 p.add_argument('path',
         type=unicode,
@@ -460,7 +467,8 @@ class remote(object):
         logger.debug('creating file: ' + local_info.path)
 
         if local_info.size:
-            media_body = MediaFileUpload(local_info.full_path, mimetype=local_info.mime, resumable=True)
+            media_body = MediaFileUpload(local_info.full_path, mimetype=local_info.mime, resumable=True,
+                                         chunksize=1024*1024)
         else:
             media_body = None
 
@@ -475,14 +483,36 @@ class remote(object):
 
         while True:
             try:
-                file_info = drive.files().insert(
+                estimated_upload_progress_size = 0
+                previous_progress_size = 0
+                estimated_progress_total = 0
+                response = None
+                request = drive.files().insert(
                     body=body,
-                    media_body=media_body).execute()
+                    media_body=media_body)
+                while response is None:
+                    status, response = request.next_chunk()
+                    if status:
+                        # compute progress so far
+                        progress = status.progress()
+                        logger.debug("{}% completed of {}".format(int(status.progress() * 100), local_info.path))
+                        previous_progress_size = estimated_upload_progress_size
+                        estimated_upload_progress_size = int(progress * local_info.size)
+                        progress_delta = estimated_upload_progress_size - previous_progress_size
+                        estimated_progress_total += progress_delta
+                        # update global progress
+                        self.upload_size += progress_delta
+                # upload complete
+                fix_estimation_delta = local_info.size - estimated_progress_total
+                # adjust global progress in case estimate was off (which it always is)
+                self.upload_size += fix_estimation_delta
                 break
             except errors.HttpError as e:
+                # exponential backoff in case of rate-limit error and other errors
+                # compute delay in seconds based on global backoff_counter
                 delay = (2 ** self.backoff_counter) + (random.randint(0, 1000)/1000)
                 if delay > 10:
-                    # limit backoff time
+                    # limit max. backoff time
                     delay = 10
                 self.backoff_counter += 1
                 logger.error('An error occurred while uploading "{}". Will retry in {} seconds. Reason: {}'.format(local_info.path, delay, e))
@@ -491,8 +521,9 @@ class remote(object):
                 logger.debug("upload interrupted")
                 return
 
+        # successful upload
+        logger.info("100% completed of {}".format(local_info.path))
         self.backoff_counter = 0
-        self.upload_size += local_info.size
         self.upload_count += 1
 
     def update_file(self, local_info, drive=None):
@@ -556,6 +587,7 @@ class remote(object):
 
 class local(object):
     file_paths = []
+    skipped_local_files = []
     changed_files = {}
     new_files = {}
     meta_files = {}
@@ -580,9 +612,13 @@ class local(object):
             for f in files:
                 path = os.path.join(root, f)
                 path = path[len(self.prefix):]
-                info = local_file(self.prefix, path)
-                self.total_size += info.size
-                self.file_paths.append(info)
+                try:
+                    info = local_file(self.prefix, path)
+                    self.total_size += info.size
+                    self.file_paths.append(info)
+                except Exception as e:
+                    self.skipped_local_files.append(path)
+                    logger.error("Cannot read file '{}'. This file will be skipped. Reason: {}".format(path, e))
 
 class drive_up(object):
     stop = False
@@ -591,19 +627,23 @@ class drive_up(object):
     threads_done = 0
 
     def __init__(self, args):
-        self.threads = args.threads
-        self.remote = remote(args)
-        self.local = local(args)
 
-        self.remote.get_file_list()
-        self.remote.build_tree()
+        self.threads = args.threads     # number of threads
+        self.remote = remote(args)      # remote info (i.e. info about google drive stuff
+        self.local = local(args)        # local info (i.e. info about local files)
 
-        self.local.read_file_list()
+        self.remote.get_file_list()     # fetch meta-data from drive
+        self.remote.build_tree()        # build remote file-info tree
+
+        self.local.read_file_list()     # build local file-info tree
 
         self.compare_files()
         self.print_summary()
 
-    def update_progress(self):
+    def update_progress(self, start_timestamp):
+        """
+        Print the current status of the upload. Includes average upload speed, time elapsed and time remaining.
+        """
         total_bytes = self.local.new_size + self.local.changed_size
         status_bytes = self.remote.upload_size
         total_count = len(self.local.new_files) + len(self.local.changed_files)
@@ -613,10 +653,31 @@ class drive_up(object):
         progress_count = float(status_bytes) / float(total_bytes)
         progress_str = '#' * int(progress_count*10)
 
+        now_timestamp = int((datetime.datetime.utcnow() - datetime.datetime(1970, 1, 1)).total_seconds() * 1000)
+        seconds_elapsed = (now_timestamp - start_timestamp) / 1000
+        m, s = divmod(seconds_elapsed, 60)
+        h, m = divmod(m, 60)
+        d, h = divmod(h, 24)
+        time_elapsed = "%d:%d:%02d:%02d" % (d, h, m, s)
+
+        average_throughput = status_bytes / seconds_elapsed
+        average_throughput_size, tp_unit = self.scale_bytes(average_throughput)
+        if average_throughput > 0:
+            estimated_seconds = int(total_bytes / average_throughput) - seconds_elapsed
+            m, s = divmod(estimated_seconds, 60)
+            h, m = divmod(m, 60)
+            d, h = divmod(h, 24)
+            time_remaining = "%d:%d:%02d:%02d (%s)" % (d, h, m, s, "days:hours:minutes:seconds")
+        else:
+            time_remaining = "(thinking...)"
+
         progress_string = ' [{0:10}] {1:>2}%'
         string = progress_string.format(progress_str, round(progress_count*100, 2))
-        string += " {}/{} files".format(status_count, total_count)
-        string += " {}/{} {}".format(status_size, total_size, unit)
+        string += "   Upload/remaining: {}/{} files".format(status_count, total_count)
+        string += " - {}/{} {}".format(status_size, total_size, unit)
+        string += " - Average: {} {}/s".format(average_throughput_size, tp_unit)
+        string += " Elapsed: {} ".format(time_elapsed)
+        string += " Remaining: {}".format(time_remaining)
         string += "\r"
 
         sys.stdout.write(string)
@@ -637,6 +698,9 @@ class drive_up(object):
         count = len(self.local.unchanged_files)
         size,unit = self.scale_bytes(self.local.unchanged_size)
         logger.info('files unchanged: {} ({} {})'.format(count, size, unit))
+
+        count = len(self.local.skipped_local_files)
+        logger.info('files skipped: {}'.format(count))
 
     def scale_bytes(self, bytes_, fixed=None):
         for s,u in ((30,'GB'), (20,'MB'), (10,'kB'), (0,'B')):
@@ -795,6 +859,7 @@ class drive_up(object):
     def start_upload_threads(self):
         self.threads = min(len(self.local.new_files), self.threads)
         self.https = []
+        start_time_timestamp = int((datetime.datetime.utcnow() - datetime.datetime(1970, 1, 1)).total_seconds() * 1000)
 
         for i in range(self.threads):
             http = self.remote.authorize()
@@ -808,7 +873,7 @@ class drive_up(object):
 
         while self.threads_done < self.threads_running:
             time.sleep(1)
-            self.update_progress()
+            self.update_progress(start_time_timestamp)
         logger.debug("main done")
 
 if __name__ == "__main__":
@@ -821,6 +886,8 @@ if __name__ == "__main__":
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
+
+    logger.info("Uploading content of folder {}".format(args.path))
 
     try:
         g = drive_up(args)
