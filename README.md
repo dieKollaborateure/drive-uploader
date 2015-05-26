@@ -14,6 +14,7 @@ stay the same, `drive-up` will update the date in Drive.
 Installation
 ------------
 
+* you need a working python 2.7 installation
 * on OSX and Linux run `setup.sh`. This will create a virtualenv in the current directory and install the necessary python libraries.
 * on Windows you must manually do this, sorry. Run `pip install -r requirements.txt` to install the dependencies.
 * Finally, install libmagic (see the [instructions in the python-magic readme](https://github.com/ahupp/python-magic#dependencies)).
