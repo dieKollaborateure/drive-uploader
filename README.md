@@ -22,8 +22,20 @@ Installation
 ### Creating an API key
 
 You will need to obtain your own Google API key using the Google Developer Console. Download the JSON-file that
-Google provides and rename it to `client-secret.json`. By default, `drive-up` will look for this file in the current
+Google provides and rename it to `client_secret.json`. By default, `drive-up` will look for this file in the current
 directory. You can specify a different name and location using the `-k` option.
+
+When asked for the type of key, choose "client / installed app".
+
+### Authorizing the API client
+
+When you run `dirve-up` for the first time, you will be asked to authorize the newly created API key. Follow the instruction
+ to complete authorization. (This involves copying a lengthy URL into your browser and authorizing access to the user's
+ Google Drive.)
+
+**After you pasted the authorization code, by default, your authorization credentials will be saved in
+your home-folder under `.drive-up/credentials.json`.**
+
 
 Usage
 -----
@@ -39,8 +51,6 @@ $ python drive-up.py ~/MyFolder
 On first run, `drive-up` will ask you to open a URL and allow `drive-up` to access your Google Drive account.
 It will then download a list of files and compare this to your local folder and then start uploading any files
 that are missing in Google Drive.
-
-**By default, your credentials will be saved in your home-folder under `.drive-up/credentials.json`.**
 
 ## Options
 
